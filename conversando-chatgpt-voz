@@ -1,0 +1,96 @@
+# Se estiver no Colab, instale antes:
+# !apt-get -qq install ffmpeg
+# !pip install -q openai openai-whisper gTTS
+
+language = 'pt'
+
+from IPython.display import Audio, display, Javascript
+from google.colab import output
+from base64 import b64decode
+import os
+import whisper
+from gtts import gTTS
+from openai import OpenAI
+
+# JavaScript que grava áudio no navegador
+RECORD = """
+const sleep = time => new Promise(resolve => setTimeout(resolve, time));
+
+const b2text = blob => new Promise(resolve => {
+  const reader = new FileReader();
+  reader.onloadend = e => resolve(e.srcElement.result);
+  reader.readAsDataURL(blob);
+});
+
+var record = time => new Promise(async resolve => {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const recorder = new MediaRecorder(stream);
+  let chunks = [];
+
+  recorder.ondataavailable = e => chunks.push(e.data);
+
+  recorder.onstop = async () => {
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    const text = await b2text(blob);
+    resolve(text);
+    stream.getTracks().forEach(track => track.stop());
+  };
+
+  recorder.start();
+  await sleep(time);
+  recorder.stop();
+});
+"""
+
+def record(sec=5):
+    # Executa o JavaScript no notebook
+    display(Javascript(RECORD))
+
+    # Chama a função JS e recebe o áudio em base64
+    js_result = output.eval_js(f"record({sec * 1000})")
+
+    # Converte base64 para bytes
+    audio = b64decode(js_result.split(',')[1])
+
+    # Salva o áudio
+    file_name = '/content/request_audio.webm'
+    with open(file_name, 'wb') as f:
+        f.write(audio)
+
+    return file_name
+
+# 1) Grava áudio
+print("Ouvindo...")
+record_file = record(5)
+display(Audio(record_file, autoplay=False))
+
+# 2) Transcreve com Whisper
+model = whisper.load_model("small")
+result = model.transcribe(record_file, fp16=False, language=language)
+transcription = result["text"]
+
+print("Transcrição:")
+print(transcription)
+
+# 3) Configura cliente OpenAI
+os.environ["OPENAI_API_KEY"] = "SUA_CHAVE_AQUI"
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+# 4) Envia transcrição para o modelo
+response = client.responses.create(
+    model="gpt-4.1",
+    input=transcription
+)
+
+chatgpt_response = response.output_text
+
+print("Resposta:")
+print(chatgpt_response)
+
+# 5) Transforma resposta em áudio
+response_audio = "/content/response_audio.mp3"
+gtts = gTTS(text=chatgpt_response, lang=language, slow=False)
+gtts.save(response_audio)
+
+# 6) Toca o áudio da resposta
+display(Audio(response_audio, autoplay=True))
